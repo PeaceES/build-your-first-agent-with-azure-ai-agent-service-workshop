@@ -15,7 +15,7 @@ from azure.ai.projects.models import (
 from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 
-from sales_data import SalesData
+from events_data import EventsData
 from stream_event_handler import StreamEventHandler
 from terminal_colors import TerminalColors as tc
 from utilities import Utilities
@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-AGENT_NAME = "Contoso Sales Agent"
-TENTS_DATA_SHEET_FILE = "datasheet/contoso-tents-datasheet.pdf"
+AGENT_NAME = "Tutorial Scheduler"
+ROOM_GUIDE_FILE = "datasheet/campus-room-guide.pdf"
 FONTS_ZIP = "fonts/fonts.zip"
 API_DEPLOYMENT_NAME = os.getenv("MODEL_DEPLOYMENT_NAME")
 PROJECT_CONNECTION_STRING = os.environ["PROJECT_CONNECTION_STRING"]
@@ -42,7 +42,7 @@ INSTRUCTIONS_FILE = None
 
 toolset = AsyncToolSet()
 utilities = Utilities()
-sales_data = SalesData(utilities)
+events_data = EventsData(utilities)
 
 
 project_client = AIProjectClient.from_connection_string(
@@ -50,17 +50,15 @@ project_client = AIProjectClient.from_connection_string(
     conn_str=PROJECT_CONNECTION_STRING,
 )
 
-functions = AsyncFunctionTool(
-    {
-        sales_data.async_fetch_sales_data_using_sqlite_query,
-    }
-)
+functions = AsyncFunctionTool({
+    events_data.async_fetch_tutorial_data_using_sqlite_query,
+})
 
-INSTRUCTIONS_FILE = "instructions/function_calling.txt" #the one we working with now
-INSTRUCTIONS_FILE = "instructions/file_search.txt"
-INSTRUCTIONS_FILE = "instructions/code_interpreter.txt"
-# INSTRUCTIONS_FILE = "instructions/bing_grounding.txt"
-INSTRUCTIONS_FILE = "instructions/code_interpreter_multilingual.txt"
+#INSTRUCTIONS_FILE = "instructions/campus_guide_file_search.txt"
+#INSTRUCTIONS_FILE = "instructions/tutorial_db_instructions.txt"
+
+INSTRUCTIONS_FILE = "instructions/general_instructions.txt"
+
 
 
 async def add_agent_tools() -> None:
@@ -70,11 +68,11 @@ async def add_agent_tools() -> None:
     # Add the functions tool
     toolset.add(functions)
 
-    # Add the tents data sheet to a new vector data store
+    # Add the room guide data sheet to a new vector data store
     vector_store = await utilities.create_vector_store(
          project_client,
-         files=[TENTS_DATA_SHEET_FILE],
-         vector_store_name="Contoso Product Information Vector Store",
+         files=[ROOM_GUIDE_FILE],
+         vector_store_name="PlannerPro Product Information Vector Store",
     )
     file_search_tool = FileSearchTool(vector_store_ids=[vector_store.id])
     toolset.add(file_search_tool)
@@ -96,26 +94,31 @@ async def add_agent_tools() -> None:
 
 
 async def initialize() -> tuple[Agent, AgentThread]:
-    """Initialize the agent with the sales data schema and instructions."""
+    """Initialize the agent with the events data schema and instructions."""
 
     if not INSTRUCTIONS_FILE:
         return None, None
 
     font_file_info = await add_agent_tools()
 
-    await sales_data.connect()
-    database_schema_string = await sales_data.get_database_info()
+    await events_data.connect()
+    database_schema_string = await events_data.get_database_info()
 
     try:
+        # Load general agent instructions
         instructions = utilities.load_instructions(INSTRUCTIONS_FILE)
-        # Replace the placeholder with the database schema string
-        instructions = instructions.replace(
-            "{database_schema_string}", database_schema_string)
 
+        # Add database tool instructions and inject schema
+        instructions += "\n\n" + utilities.load_instructions("instructions/tutorial_db_instructions.txt").replace(
+            "{database_schema_string}", database_schema_string
+        )
+
+        # Add file search instructions
+        instructions += "\n\n" + utilities.load_instructions("instructions/campus_guide_file_search.txt")
+
+        # Inject font file ID if needed
         if font_file_info:
-            # Replace the placeholder with the font file ID
-            instructions = instructions.replace(
-                "{font_file_id}", font_file_info.id)
+            instructions = instructions.replace("{font_file_id}", font_file_info.id)
 
         print("Creating agent...")
         agent = await project_client.agents.create_agent(
@@ -149,7 +152,7 @@ async def cleanup(agent: Agent, thread: AgentThread) -> None:
         await project_client.agents.delete_file(f.id)
     await project_client.agents.delete_thread(thread.id)
     await project_client.agents.delete_agent(agent.id)
-    await sales_data.close()
+    await events_data.close()
 
 
 async def post_message(thread_id: str, content: str, agent: Agent, thread: AgentThread) -> None:
@@ -182,7 +185,7 @@ async def post_message(thread_id: str, content: str, agent: Agent, thread: Agent
 
 async def main() -> None:
     """
-    Example questions: Sales by region, top-selling products, total shipping costs by region, show as a pie chart.
+    Example questions:  How many tutorials are scheduled for next week?
     """
     async with project_client:
         agent, thread = await initialize()
